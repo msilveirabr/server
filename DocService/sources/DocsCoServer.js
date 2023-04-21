@@ -3817,6 +3817,7 @@ exports.commandFromServer = function (req, res) {
     let version = undefined;
     let outputLicense = undefined;
     let ctx = new operationContext.Context();
+    const forgottenData = {};
     try {
       ctx.initFromRequest(req);
       ctx.logger.info('commandFromServer start');
@@ -3875,6 +3876,33 @@ exports.commandFromServer = function (req, res) {
               result = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
             }
             break;
+          case 'getForgotten':
+            const fileExist = yield storage.isForgottenFileExist(ctx, `${docId}/output.docx`, 'forgotten');
+            if (fileExist) {
+              const baseUrl = utils.getBaseUrlByRequest(req);
+              forgottenData.fileUrl = yield storage.getSignedUrl(
+                  ctx, baseUrl, `${docId}/output.docx`, commonDefines.c_oAscUrlTypes.Session, 'output.docx', undefined, 'forgotten'
+              );
+            } else {
+              result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+            }
+            break;
+          case 'deleteForgotten':
+            yield storage.deleteObject(ctx, `${docId}/output.docx`, 'forgotten').catch(error => {
+              // EPERM - operation not permitted; EBADF - bad file descriptor; EACCES - permission denied.
+              const notModifiedErrorCodes = ['EPERM', 'EBADF', 'EACCES'];
+              result = notModifiedErrorCodes.includes(error.code) ? commonDefines.c_oAscServerCommandErrors.NotModified : commonDefines.c_oAscServerCommandErrors.UnknownError;
+
+              // ENOENT - no such file or directory;
+              if (error.code === 'ENOENT') {
+                result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+              }
+            });
+            break;
+          case 'getForgottenList':
+            const directoryList = yield storage.listObjects(ctx, '', 'forgotten');
+            forgottenData.forgottenKeys = directoryList.map(directory => directory.split('/')[0]);
+            break;
           case 'version':
               version = commonDefines.buildVersion + '.' + commonDefines.buildNumber;
             break;
@@ -3892,6 +3920,7 @@ exports.commandFromServer = function (req, res) {
     } finally {
       //undefined value are excluded in JSON.stringify
       let output = {'key': docId, 'error': result, 'version': version};
+      Object.assign(output, forgottenData);
       if (outputLicense) {
         Object.assign(output, outputLicense);
       }

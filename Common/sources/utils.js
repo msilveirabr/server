@@ -154,6 +154,9 @@ function fsStat(fsPath) {
   });
 }
 exports.fsStat = fsStat;
+exports.fsAccess = function (path, mode = fs.constants.F_OK) {
+  return fs.promises.access(path, mode);
+};
 function fsReadDir(fsPath) {
   return new Promise(function(resolve, reject) {
     fs.readdir(fsPath, function(err, list) {
