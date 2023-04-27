@@ -139,7 +139,3 @@ exports.getSignedUrlsByArray = function(ctx, baseUrl, list, optPath, urlType, op
 exports.getRelativePath = function(strBase, strPath) {
   return strPath.substring(strBase.length + 1);
 };
-exports.isForgottenFileExist = function (ctx, strPath, opt_specialDir) {
-  const storageSrc = getStoragePath(ctx, strPath, opt_specialDir);
-  return storage.isForgottenFileExist(storageSrc).then(onSuccess => true, onError => false);
-}

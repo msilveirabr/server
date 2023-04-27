@@ -249,6 +249,3 @@ exports.getSignedUrl = function(baseUrl, strPath, urlType, optFilename, opt_crea
     });
   });
 };
-exports.isForgottenFileExist = function (strPath) {
-  return this.headObject(strPath);
-}

@@ -143,6 +143,7 @@ const cfgForceSaveStep = ms(config.get('autoAssembly.step'));
 const cfgQueueType = configCommon.get('queue.type');
 const cfgQueueRetentionPeriod = configCommon.get('queue.retentionPeriod');
 const cfgForgottenFiles = config.get('server.forgottenfiles');
+const cfgForgottenFilesName = config.get('server.forgottenfilesname');
 const cfgMaxRequestChanges = config.get('server.maxRequestChanges');
 const cfgWarningLimitPercents = configCommon.get('license.warning_limit_percents') / 100;
 const cfgErrorFiles = configCommon.get('FileConverter.converter.errorfiles');
@@ -1233,6 +1234,10 @@ function getRequestParams(ctx, req, opt_isNotInBody) {
   });
 }
 
+function* getForgottenFilesKeys(ctx) {
+  const directoryList = yield storage.listObjects(ctx, '', cfgForgottenFiles);
+  return directoryList.map(directory => directory.split('/')[0]);
+}
 function getLicenseNowUtc() {
   const now = new Date();
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(),
@@ -3877,31 +3882,25 @@ exports.commandFromServer = function (req, res) {
             }
             break;
           case 'getForgotten':
-            const fileExist = yield storage.isForgottenFileExist(ctx, `${docId}/output.docx`, 'forgotten');
-            if (fileExist) {
+            try {
+              // Checking for file existence.
+              yield storage.headObject(ctx, `${docId}/${cfgForgottenFilesName}.docx`, cfgForgottenFiles);
+              // If existed, making URL.
               const baseUrl = utils.getBaseUrlByRequest(req);
-              forgottenData.fileUrl = yield storage.getSignedUrl(
-                  ctx, baseUrl, `${docId}/output.docx`, commonDefines.c_oAscUrlTypes.Session, 'output.docx', undefined, 'forgotten'
+              forgottenData.url = yield storage.getSignedUrl(
+                  ctx, baseUrl, `${docId}/${cfgForgottenFilesName}.docx`, commonDefines.c_oAscUrlTypes.Temporary, `${cfgForgottenFilesName}.docx`, undefined, cfgForgottenFiles
               );
-            } else {
+              forgottenData.keys = yield getForgottenFilesKeys(ctx);
+            } catch (error) {
               result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
             }
             break;
           case 'deleteForgotten':
-            yield storage.deleteObject(ctx, `${docId}/output.docx`, 'forgotten').catch(error => {
-              // EPERM - operation not permitted; EBADF - bad file descriptor; EACCES - permission denied.
-              const notModifiedErrorCodes = ['EPERM', 'EBADF', 'EACCES'];
-              result = notModifiedErrorCodes.includes(error.code) ? commonDefines.c_oAscServerCommandErrors.NotModified : commonDefines.c_oAscServerCommandErrors.UnknownError;
-
-              // ENOENT - no such file or directory;
-              if (error.code === 'ENOENT') {
-                result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-              }
-            });
+            yield storage.deleteObject(ctx, `${docId}/${cfgForgottenFilesName}.docx`, cfgForgottenFiles);
+            forgottenData.keys = yield getForgottenFilesKeys(ctx);
             break;
           case 'getForgottenList':
-            const directoryList = yield storage.listObjects(ctx, '', 'forgotten');
-            forgottenData.forgottenKeys = directoryList.map(directory => directory.split('/')[0]);
+            forgottenData.keys = yield getForgottenFilesKeys(ctx);
             break;
           case 'version':
               version = commonDefines.buildVersion + '.' + commonDefines.buildNumber;

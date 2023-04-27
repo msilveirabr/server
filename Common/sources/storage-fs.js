@@ -206,6 +206,3 @@ exports.getSignedUrl = function(baseUrl, strPath, urlType, optFilename, opt_crea
     resolve(url);
   });
 };
-exports.isForgottenFileExist = function(strPath) {
-  return utils.fsAccess(getFilePath(strPath));
-};
