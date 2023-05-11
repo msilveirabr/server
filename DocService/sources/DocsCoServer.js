@@ -184,6 +184,90 @@ function getIsShutdown() {
   return shutdownFlag;
 }
 
+function validateCommand(ctx, authRes, command) {
+  const commandsWithoutKey = ['version', 'license', 'getForgottenList'];
+  const arrayKeyCommands = ['getForgotten', 'deleteForgotten'];
+  const isDocIdNullable = command.key == null;
+  const isDocIdAnArray = Array.isArray(command.key);
+
+  if (isDocIdAnArray) {
+    ctx.setDocId('arrayOfDocId');
+  } else {
+    ctx.setDocId(command.key ?? 'nullDocId');
+  }
+
+  if(authRes.code === constants.VKEY_KEY_EXPIRE){
+    return commonDefines.c_oAscServerCommandErrors.TokenExpire;
+  } else if(authRes.code !== constants.NO_ERROR){
+    return commonDefines.c_oAscServerCommandErrors.Token;
+  }
+
+  if (isDocIdNullable && !commandsWithoutKey.includes(command.c)) {
+    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+  }
+
+  if (!isDocIdNullable && commandsWithoutKey.includes(command.c)) {
+    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+  }
+
+  if (isDocIdAnArray && !arrayKeyCommands.includes(command.c)) {
+    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+  }
+
+  if (arrayKeyCommands.includes(command.c)) {
+    // If key is a string, but command is an array-based.
+    if (!isDocIdNullable && !isDocIdAnArray) {
+      return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+    }
+
+    // If array is empty.
+    if (isDocIdAnArray && command.key.length === 0) {
+      return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+    }
+  }
+
+  return commonDefines.c_oAscServerCommandErrors.NoError;
+}
+
+function *fulfilledPromisesValues(promises) {
+  const executingResult = yield Promise.allSettled(promises);
+  return executingResult.filter(promiseResult => promiseResult.status === 'fulfilled').map(file => file.value);
+}
+
+function *existingForgottenFiles(ctx, docId) {
+  const files = {};
+  const objects = yield storage.listObjects(ctx, '', cfgForgottenFiles);
+  const directoryList = objects.map(object => object.split('/'));
+  let errorCode = commonDefines.c_oAscServerCommandErrors.NoError;
+
+  directoryList.forEach(directory => {
+    if (files[directory[0]] === undefined) {
+      files[directory[0]] = [directory[1]];
+    } else {
+      files[directory[0]].push(directory[1]);
+    }
+  });
+
+  const keys = Object.keys(files);
+  const existingFiles = docId.filter(id => keys.includes(id));
+  if (existingFiles.length !== docId.length) {
+    errorCode = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+  }
+
+  const fullFilesNames = existingFiles.map(directory => {
+    const alternative = files[directory].length > 0 ? files[directory][0] : '--error--';
+    const fileName = files[directory].find(name => name.includes(cfgForgottenFilesName)) ?? alternative;
+    return [`${directory}/${fileName}`, fileName];
+  });
+
+  const validPaths = fullFilesNames.filter(name => name[1] !== '--error--');
+  if (validPaths.length !== fullFilesNames.length && errorCode !== commonDefines.c_oAscServerCommandErrors.DocumentIdError) {
+    errorCode = commonDefines.c_oAscServerCommandErrors.UnknownError;
+  }
+
+  return { error: errorCode, paths: validPaths };
+}
+
 function DocumentChanges(docId) {
   this.docId = docId;
   this.arrChanges = [];
@@ -3826,22 +3910,15 @@ exports.commandFromServer = function (req, res) {
     try {
       ctx.initFromRequest(req);
       ctx.logger.info('commandFromServer start');
-      let authRes = yield getRequestParams(ctx, req);
-      let params = authRes.params;
-      if(authRes.code === constants.VKEY_KEY_EXPIRE){
-        result = commonDefines.c_oAscServerCommandErrors.TokenExpire;
-      } else if(authRes.code !== constants.NO_ERROR){
-        result = commonDefines.c_oAscServerCommandErrors.Token;
-      }
+      const authRes = yield getRequestParams(ctx, req);
+      const params = authRes.params;
       // Ключ id-документа
       docId = params.key;
-      ctx.setDocId(docId);
-      if (commonDefines.c_oAscServerCommandErrors.NoError === result && null == docId && 'version' !== params.c && 'license' !== params.c) {
-        result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-      } else if(commonDefines.c_oAscServerCommandErrors.NoError === result) {
+      result = validateCommand(ctx, authRes, params);
+      if (result === commonDefines.c_oAscServerCommandErrors.NoError) {
         ctx.logger.debug('commandFromServer: c = %s', params.c);
         switch (params.c) {
-          case 'info':
+          case 'info': {
             //If no files in the database means they have not been edited.
             const selectRes = yield taskResult.select(ctx, docId);
             if (selectRes.length > 0) {
@@ -3850,7 +3927,8 @@ exports.commandFromServer = function (req, res) {
               result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
             }
             break;
-          case 'drop':
+          }
+          case 'drop': {
             if (params.userid) {
               yield* publish(ctx, {type: commonDefines.c_oPublishType.drop, ctx: ctx, docId: docId, users: [params.userid], description: params.description});
             } else if (params.users) {
@@ -3860,7 +3938,8 @@ exports.commandFromServer = function (req, res) {
               result = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
             }
             break;
-          case 'saved':
+          }
+          case 'saved': {
             // Результат от менеджера документов о статусе обработки сохранения файла после сборки
             if ('1' !== params.status) {
               //запрос saved выполняется синхронно, поэтому заполняем переменную чтобы проверить ее после sendServerRequest
@@ -3870,47 +3949,75 @@ exports.commandFromServer = function (req, res) {
               ctx.logger.info('saved id = %s status = %s conv = %s', docId, params.status, params.conv);
             }
             break;
-          case 'forcesave':
+          }
+          case 'forcesave': {
             let forceSaveRes = yield startForceSave(ctx, docId, commonDefines.c_oAscForceSaveTypes.Command, params.userdata, undefined, undefined, undefined, undefined, utils.getBaseUrlByRequest(req));
             result = forceSaveRes.code;
             break;
-          case 'meta':
+          }
+          case 'meta': {
             if (params.meta) {
               yield* publish(ctx, {type: commonDefines.c_oPublishType.meta, ctx: ctx, docId: docId, meta: params.meta});
             } else {
               result = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
             }
             break;
-          case 'getForgotten':
-            try {
-              // Checking for file existence.
-              yield storage.headObject(ctx, `${docId}/${cfgForgottenFilesName}.docx`, cfgForgottenFiles);
-              // If existed, making URL.
-              const baseUrl = utils.getBaseUrlByRequest(req);
-              forgottenData.url = yield storage.getSignedUrl(
-                  ctx, baseUrl, `${docId}/${cfgForgottenFilesName}.docx`, commonDefines.c_oAscUrlTypes.Temporary, `${cfgForgottenFilesName}.docx`, undefined, cfgForgottenFiles
+          }
+          case 'getForgotten': {
+            forgottenData.url = [];
+            // Checking for files existence.
+            const existingFiles = yield existingForgottenFiles(ctx, docId);
+            result = existingFiles.error;
+            // Creating URLs from files.
+            const baseUrl = utils.getBaseUrlByRequest(req);
+            const signedUrlPromises = existingFiles.paths.map(path => {
+              return storage.getSignedUrl(
+                ctx, baseUrl, path[0], commonDefines.c_oAscUrlTypes.Temporary, path[1], undefined, cfgForgottenFiles
               );
-              forgottenData.keys = yield getForgottenFilesKeys(ctx);
-            } catch (error) {
-              result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+            });
+            forgottenData.url = yield fulfilledPromisesValues(signedUrlPromises);
+            if (forgottenData.url.length !== existingFiles.paths.length && result !== commonDefines.c_oAscServerCommandErrors.DocumentIdError) {
+              result = commonDefines.c_oAscServerCommandErrors.UnknownError;
             }
             break;
-          case 'deleteForgotten':
-            yield storage.deleteObject(ctx, `${docId}/${cfgForgottenFilesName}.docx`, cfgForgottenFiles);
+          }
+          case 'deleteForgotten': {
+            forgottenData.deleted = [];
+            // Checking for files existence.
+            const existingFiles = yield existingForgottenFiles(ctx, docId);
+            result = existingFiles.error;
+            if (result === commonDefines.c_oAscServerCommandErrors.NoError) {
+              // Deleting files.
+              const pathClosure = (path) => {
+                return new Promise((resolve, reject) => {
+                  storage.deleteObject(ctx, path, cfgForgottenFiles).then(resolved => resolve(path), rejected => reject(rejected));
+                });
+              };
+              const deletePromises = existingFiles.paths.map(path => pathClosure(path[0]));
+              const deletedDirectories = yield fulfilledPromisesValues(deletePromises);
+              forgottenData.deleted = deletedDirectories.map(directory => directory.split('/')[0]);
+              if (forgottenData.deleted.length !== docId.length) {
+                result = commonDefines.c_oAscServerCommandErrors.UnknownError;
+              }
+            }
+            break;
+          }
+          case 'getForgottenList': {
             forgottenData.keys = yield getForgottenFilesKeys(ctx);
             break;
-          case 'getForgottenList':
-            forgottenData.keys = yield getForgottenFilesKeys(ctx);
+          }
+          case 'version': {
+            version = commonDefines.buildVersion + '.' + commonDefines.buildNumber;
             break;
-          case 'version':
-              version = commonDefines.buildVersion + '.' + commonDefines.buildNumber;
+          }
+          case 'license': {
+            outputLicense = yield commandLicense(ctx);
             break;
-          case 'license':
-              outputLicense = yield commandLicense(ctx);
-            break;
-          default:
+          }
+          default: {
             result = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
             break;
+          }
         }
       }
     } catch (err) {
