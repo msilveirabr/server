@@ -184,49 +184,33 @@ function getIsShutdown() {
   return shutdownFlag;
 }
 
-function validateCommand(ctx, authRes, command) {
+function validateAndTransformInputParams(ctx, authRes, command) {
   const commandsWithoutKey = ['version', 'license', 'getForgottenList'];
   const arrayKeyCommands = ['getForgotten', 'deleteForgotten'];
   const isDocIdNullable = command.key == null;
-  const isDocIdAnArray = Array.isArray(command.key);
+  let isDocIdAnArray = Array.isArray(command.keys);
 
-  if (isDocIdAnArray) {
-    ctx.setDocId('arrayOfDocId');
-  } else {
-    ctx.setDocId(command.key ?? 'nullDocId');
-  }
+  ctx.setDocId(command.key);
 
   if(authRes.code === constants.VKEY_KEY_EXPIRE){
     return commonDefines.c_oAscServerCommandErrors.TokenExpire;
   } else if(authRes.code !== constants.NO_ERROR){
     return commonDefines.c_oAscServerCommandErrors.Token;
   }
+  //transform key to keys
+  if (arrayKeyCommands.includes(command.c) && !isDocIdAnArray && !isDocIdNullable) {
+    isDocIdAnArray = true;
+    command.keys = [command.key];
+  }
+  const isValidWithoutKey = commandsWithoutKey.includes(command.c);//ignore key and keys
+  const isValidArray = arrayKeyCommands.includes(command.c) && isDocIdAnArray;
+  const isValidOther = !isDocIdNullable;
 
-  if (isDocIdNullable && !commandsWithoutKey.includes(command.c)) {
+  if (isValidWithoutKey || isValidArray || isValidOther) {
+    return commonDefines.c_oAscServerCommandErrors.NoError;
+  } else {
     return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
   }
-
-  if (!isDocIdNullable && commandsWithoutKey.includes(command.c)) {
-    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-  }
-
-  if (isDocIdAnArray && !arrayKeyCommands.includes(command.c)) {
-    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-  }
-
-  if (arrayKeyCommands.includes(command.c)) {
-    // If key is a string, but command is an array-based.
-    if (!isDocIdNullable && !isDocIdAnArray) {
-      return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-    }
-
-    // If array is empty.
-    if (isDocIdAnArray && command.key.length === 0) {
-      return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-    }
-  }
-
-  return commonDefines.c_oAscServerCommandErrors.NoError;
 }
 
 function *fulfilledPromisesValues(promises) {
@@ -3914,7 +3898,7 @@ exports.commandFromServer = function (req, res) {
       const params = authRes.params;
       // Ключ id-документа
       docId = params.key;
-      result = validateCommand(ctx, authRes, params);
+      result = validateAndTransformInputParams(ctx, authRes, params);
       if (result === commonDefines.c_oAscServerCommandErrors.NoError) {
         ctx.logger.debug('commandFromServer: c = %s', params.c);
         switch (params.c) {
@@ -3982,23 +3966,17 @@ exports.commandFromServer = function (req, res) {
             break;
           }
           case 'deleteForgotten': {
-            forgottenData.deleted = [];
-            // Checking for files existence.
-            const existingFiles = yield existingForgottenFiles(ctx, docId);
-            result = existingFiles.error;
-            if (result === commonDefines.c_oAscServerCommandErrors.NoError) {
-              // Deleting files.
-              const pathClosure = (path) => {
-                return new Promise((resolve, reject) => {
-                  storage.deleteObject(ctx, path, cfgForgottenFiles).then(resolved => resolve(path), rejected => reject(rejected));
-                });
-              };
-              const deletePromises = existingFiles.paths.map(path => pathClosure(path[0]));
-              const deletedDirectories = yield fulfilledPromisesValues(deletePromises);
-              forgottenData.deleted = deletedDirectories.map(directory => directory.split('/')[0]);
-              if (forgottenData.deleted.length !== docId.length) {
-                result = commonDefines.c_oAscServerCommandErrors.UnknownError;
+            for (const key of params.keys) {
+              ctx.setDocId(key);
+              const forgottenList = yield storage.listObjects(ctx, key, cfgForgottenFiles);
+              const forgotten = forgottenList.find(forgotten => {
+                return cfgForgottenFilesName === pathModule.basename(forgotten, pathModule.extname(forgotten));
+              });
+              if (!forgotten) {
+                result = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+                break;
               }
+              yield storage.deleteObject(ctx, forgotten, cfgForgottenFiles);
             }
             break;
           }
