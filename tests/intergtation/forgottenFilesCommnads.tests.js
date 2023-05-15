@@ -10,8 +10,8 @@ const ctx = new operationContext.Context();
 const testFilesNames = {
   get: 'DocService-DocsCoServer-forgottenFilesCommands-getForgotten-integration-test',
   delete1: 'DocService-DocsCoServer-forgottenFilesCommands-deleteForgotten-integration-test',
-  delete2: 'DocService-DocsCoServer-forgottenFilesCommands-deleteForgotten-2-integration-test',
-  delete3: 'DocService-DocsCoServer-forgottenFilesCommands-deleteForgotten-3-integration-test',
+  // delete2: 'DocService-DocsCoServer-forgottenFilesCommands-deleteForgotten-2-integration-test',
+  // delete3: 'DocService-DocsCoServer-forgottenFilesCommands-deleteForgotten-3-integration-test',
   getList: 'DocService-DocsCoServer-forgottenFilesCommands-getForgottenList-integration-test'
 };
 
@@ -74,12 +74,8 @@ afterAll(async function () {
 describe('Command service', function () {
   describe('Forgotten files commands parameters validation', function () {
     describe('Invalid key format', function () {
-      const tests = ['getForgotten', 'deleteForgotten', 'getForgottenList'];
+      const tests = ['getForgotten', 'deleteForgotten'];
       const addSpecialCases = (invalidRequests, expected, testSubject) => {
-        if (testSubject === 'getForgottenList') {
-          return;
-        }
-
         invalidRequests.push(JSON.stringify({
           c: testSubject
         }));
@@ -97,7 +93,7 @@ describe('Command service', function () {
 
       for (const testSubject of tests) {
         test(testSubject, async function () {
-          const invalidKeys = [true, "someKey", [], {}, 1, 1.1];
+          const invalidKeys = [true, [], {}, 1, 1.1];
           const invalidRequests = invalidKeys.map(key => JSON.stringify({
             c: testSubject,
             key
@@ -126,23 +122,21 @@ describe('Command service', function () {
   describe('Forgotten files commands verification', function () {
     describe('getForgotten', function () {
       const createExpected = ({ key, error }) => {
+        const validKey = typeof key === 'string' && error === 0
         const urlPattern = 'http://localhost:8000/cache/files/forgotten/--key--/output.docx/output.docx';
-        const invalidKeyReplacement = (key) => typeof key === 'string' ? key : '--not-existed--';
 
-        return {
-          key,
-          error,
-          url: key.map(id => urlPattern.replace('--key--', invalidKeyReplacement(id))).filter(url => !url.includes('/--not-existed--/'))
+        const expected = { key, error };
+
+        if (validKey) {
+          expected.url = urlPattern.replace('--key--', key);
         }
+
+        return expected;
       };
 
       const testCases = {
-        'Single key': { key: [testFilesNames.get], error: 0 },
-        'Multiple keys': { key: [testFilesNames.get, testFilesNames.delete1, testFilesNames.getList], error: 0 },
-        'Not existed key': { key: ['--not-existed--'], error: 1 },
-        'Partially existed keys': { key: ['--not-existed--', testFilesNames.get, testFilesNames.getList], error: 1 },
-        'Invalid key': { key: [true], error: 1 },
-        'Partially invalid keys': { key: [1, testFilesNames.get, null, testFilesNames.getList], error: 1 },
+        'Single key': { key: testFilesNames.get, error: 0 },
+        'Not existed key': { key: '--not-existed--', error: 1 },
       };
 
       for (const testCase in testCases) {
@@ -156,7 +150,10 @@ describe('Command service', function () {
 
           const expected = createExpected(testCases[testCase]);
           const actual = JSON.parse(actualResponse);
-          actual.url = actual.url.map(url => url.split('?')[0]);
+
+          if (actual.url) {
+            actual.url = actual.url.split('?')[0];
+          }
 
           expect(actual).toEqual(expected);
         });
@@ -165,21 +162,15 @@ describe('Command service', function () {
 
     describe('deleteForgotten', function () {
       const createExpected = ({ key, error }) => {
-        const deleted = error === 1 ? [] : key;
         return {
           key,
-          error,
-          deleted
+          error
         };
       };
 
       const testCases = {
-        'Single key': { key: [testFilesNames.delete1], error: 0 },
-        'Multiple keys': { key: [testFilesNames.delete2, testFilesNames.delete3], error: 0 },
-        'Not existed key': { key: ['--not-existed--'], error: 1 },
-        'Partially existed keys': { key: ['--not-existed--', testFilesNames.get, testFilesNames.getList], error: 1 },
-        'Invalid key': { key: [true], error: 1 },
-        'Partially invalid keys': { key: [1, testFilesNames.get, null, testFilesNames.getList], error: 1 },
+        'Single key': { key: testFilesNames.delete1, error: 0 },
+        'Not existed key': { key: '--not-existed--', error: 1 },
       };
 
       for (const testCase in testCases) {
@@ -190,8 +181,8 @@ describe('Command service', function () {
           });
 
           const alreadyExistedDirectories = getKeysDirectories(await storage.listObjects(ctx, '', cfgForgottenFiles));
-          const directoriesToBeDeleted = testCases[testCase].error === 1 ? [] : testCases[testCase].key;
-          const shouldExist = alreadyExistedDirectories.filter(directory => !directoriesToBeDeleted.includes(directory));
+          const directoryToBeDeleted = testCases[testCase].error !== 0 ? '--not-existed--' : testCases[testCase].key;
+          const shouldExist = alreadyExistedDirectories.filter(directory => directoryToBeDeleted !== directory);
 
           const actualResponse = await makeRequest(requestBody);
 
