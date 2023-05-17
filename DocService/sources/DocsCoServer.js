@@ -184,156 +184,6 @@ function getIsShutdown() {
   return shutdownFlag;
 }
 
-function validateInputParams(ctx, authRes, command) {
-  const commandsWithoutKey = ['version', 'license', 'getForgottenList'];
-  const isValidWithoutKey = commandsWithoutKey.includes(command.c);
-  const isDocIdString = typeof command.key === 'string';
-
-  ctx.setDocId(command.key);
-
-  if(authRes.code === constants.VKEY_KEY_EXPIRE){
-    return commonDefines.c_oAscServerCommandErrors.TokenExpire;
-  } else if(authRes.code !== constants.NO_ERROR){
-    return commonDefines.c_oAscServerCommandErrors.Token;
-  }
-
-  if (isValidWithoutKey || isDocIdString) {
-    return commonDefines.c_oAscServerCommandErrors.NoError;
-  } else {
-    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-  }
-}
-
-function *commandLicense(ctx) {
-  const nowUTC = getLicenseNowUtc();
-  const users = yield editorData.getPresenceUniqueUser(ctx, nowUTC);
-  const users_view = yield editorData.getPresenceUniqueViewUser(ctx, nowUTC);
-  const licenseInfo = yield tenantManager.getTenantLicense(ctx);
-
-  return {
-    license: utils.convertLicenseInfoToFileParams(licenseInfo),
-    server: utils.convertLicenseInfoToServerParams(licenseInfo),
-    quota: { users, users_view }
-  };
-}
-
-function *getForgottenFilesKeys(ctx) {
-  const directoryList = yield storage.listObjects(ctx, '', cfgForgottenFiles);
-  return directoryList.map(directory => directory.split('/')[0]);
-}
-
-function *findForgottenFile(ctx, docId) {
-  const forgottenList = yield storage.listObjects(ctx, docId, cfgForgottenFiles);
-  return forgottenList.find(forgotten => cfgForgottenFilesName === pathModule.basename(forgotten, pathModule.extname(forgotten)));
-}
-
-/**
- * Server commands handler.
- * @param ctx Local context.
- * @param params Request parameters.
- * @param req Request object.
- * @param output{{ key: string, error: number, version: undefined | string }} Mutable. Response body.
- * @returns undefined.
- */
-function *commandHandle(ctx, params, req, output) {
-  const docId = params.key;
-  const forgottenData = {};
-
-  switch (params.c) {
-    case 'info': {
-      //If no files in the database means they have not been edited.
-      const selectRes = yield taskResult.select(ctx, docId);
-      if (selectRes.length > 0) {
-        output.error = yield* bindEvents(ctx, docId, params.callback, utils.getBaseUrlByRequest(req), undefined, params.userdata);
-      } else {
-        output.error = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-      }
-      break;
-    }
-    case 'drop': {
-      if (params.userid) {
-        yield* publish(ctx, {type: commonDefines.c_oPublishType.drop, ctx: ctx, docId: docId, users: [params.userid], description: params.description});
-      } else if (params.users) {
-        const users = (typeof params.users === 'string') ? JSON.parse(params.users) : params.users;
-        yield* dropUsersFromDocument(ctx, docId, users);
-      } else {
-        output.error = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
-      }
-      break;
-    }
-    case 'saved': {
-      // Результат от менеджера документов о статусе обработки сохранения файла после сборки
-      if ('1' !== params.status) {
-        //запрос saved выполняется синхронно, поэтому заполняем переменную чтобы проверить ее после sendServerRequest
-        yield editorData.setSaved(ctx, docId, params.status);
-        ctx.logger.warn('saved corrupted id = %s status = %s conv = %s', docId, params.status, params.conv);
-      } else {
-        ctx.logger.info('saved id = %s status = %s conv = %s', docId, params.status, params.conv);
-      }
-      break;
-    }
-    case 'forcesave': {
-      let forceSaveRes = yield startForceSave(ctx, docId, commonDefines.c_oAscForceSaveTypes.Command, params.userdata, undefined, undefined, undefined, undefined, utils.getBaseUrlByRequest(req));
-      output.error = forceSaveRes.code;
-      break;
-    }
-    case 'meta': {
-      if (params.meta) {
-        yield* publish(ctx, {type: commonDefines.c_oPublishType.meta, ctx: ctx, docId: docId, meta: params.meta});
-      } else {
-        output.error = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
-      }
-      break;
-    }
-    case 'getForgotten': {
-      // Checking for files existence.
-      const forgottenFileFullPath = yield* findForgottenFile(ctx, docId);
-      if (!forgottenFileFullPath) {
-        output.error = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-        break;
-      }
-
-      const forgottenFile = pathModule.basename(forgottenFileFullPath);
-
-      // Creating URLs from files.
-      const baseUrl = utils.getBaseUrlByRequest(req);
-      forgottenData.url = yield storage.getSignedUrl(
-        ctx, baseUrl, forgottenFileFullPath, commonDefines.c_oAscUrlTypes.Temporary, forgottenFile, undefined, cfgForgottenFiles
-      );
-      break;
-    }
-    case 'deleteForgotten': {
-      const forgottenFile = yield* findForgottenFile(ctx, docId);
-      if (!forgottenFile) {
-        output.error = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
-        break;
-      }
-
-      yield storage.deleteObject(ctx, forgottenFile, cfgForgottenFiles);
-      break;
-    }
-    case 'getForgottenList': {
-      forgottenData.keys = yield* getForgottenFilesKeys(ctx);
-      break;
-    }
-    case 'version': {
-      output.version = `${commonDefines.buildVersion}.${commonDefines.buildNumber}`;
-      break;
-    }
-    case 'license': {
-      const outputLicense = yield* commandLicense(ctx);
-      Object.assign(output, outputLicense);
-      break;
-    }
-    default: {
-      output.error = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
-      break;
-    }
-  }
-
-  Object.assign(output, forgottenData);
-}
-
 function DocumentChanges(docId) {
   this.docId = docId;
   this.arrChanges = [];
@@ -3949,17 +3799,157 @@ exports.licenseInfo = function(req, res) {
     }
   });
 };
-// const commandLicense = co.wrap(function*(ctx) {
-//   const nowUTC = getLicenseNowUtc();
-//   const users = yield editorData.getPresenceUniqueUser(ctx, nowUTC);
-//   const users_view = yield editorData.getPresenceUniqueViewUser(ctx, nowUTC);
-//   const licenseInfo = yield tenantManager.getTenantLicense(ctx);
-//   return {
-//     license: utils.convertLicenseInfoToFileParams(licenseInfo),
-//     server: utils.convertLicenseInfoToServerParams(licenseInfo),
-//     quota: { users, users_view }
-//   };
-// });
+
+function validateInputParams(ctx, authRes, command) {
+  const commandsWithoutKey = ['version', 'license', 'getForgottenList'];
+  const isValidWithoutKey = commandsWithoutKey.includes(command.c);
+  const isDocIdString = typeof command.key === 'string';
+
+  ctx.setDocId(command.key);
+
+  if(authRes.code === constants.VKEY_KEY_EXPIRE){
+    return commonDefines.c_oAscServerCommandErrors.TokenExpire;
+  } else if(authRes.code !== constants.NO_ERROR){
+    return commonDefines.c_oAscServerCommandErrors.Token;
+  }
+
+  if (isValidWithoutKey || isDocIdString) {
+    return commonDefines.c_oAscServerCommandErrors.NoError;
+  } else {
+    return commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+  }
+}
+
+function* getFilesKeys(ctx, opt_specialDir) {
+  const directoryList = yield storage.listObjects(ctx, '', opt_specialDir);
+  return directoryList.map(directory => directory.split('/')[0]);
+}
+
+function* findForgottenFile(ctx, docId) {
+  const forgottenList = yield storage.listObjects(ctx, docId, cfgForgottenFiles);
+  return forgottenList.find(forgotten => cfgForgottenFilesName === pathModule.basename(forgotten, pathModule.extname(forgotten)));
+}
+
+function* commandLicense(ctx) {
+  const nowUTC = getLicenseNowUtc();
+  const users = yield editorData.getPresenceUniqueUser(ctx, nowUTC);
+  const users_view = yield editorData.getPresenceUniqueViewUser(ctx, nowUTC);
+  const licenseInfo = yield tenantManager.getTenantLicense(ctx);
+
+  return {
+    license: utils.convertLicenseInfoToFileParams(licenseInfo),
+    server: utils.convertLicenseInfoToServerParams(licenseInfo),
+    quota: { users, users_view }
+  };
+}
+
+/**
+ * Server commands handler.
+ * @param ctx Local context.
+ * @param params Request parameters.
+ * @param req Request object.
+ * @param output{{ key: string, error: number, version: undefined | string }} Mutable. Response body.
+ * @returns undefined.
+ */
+function* commandHandle(ctx, params, req, output) {
+  const docId = params.key;
+  const forgottenData = {};
+
+  switch (params.c) {
+    case 'info': {
+      //If no files in the database means they have not been edited.
+      const selectRes = yield taskResult.select(ctx, docId);
+      if (selectRes.length > 0) {
+        output.error = yield* bindEvents(ctx, docId, params.callback, utils.getBaseUrlByRequest(req), undefined, params.userdata);
+      } else {
+        output.error = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+      }
+      break;
+    }
+    case 'drop': {
+      if (params.userid) {
+        yield* publish(ctx, {type: commonDefines.c_oPublishType.drop, ctx: ctx, docId: docId, users: [params.userid], description: params.description});
+      } else if (params.users) {
+        const users = (typeof params.users === 'string') ? JSON.parse(params.users) : params.users;
+        yield* dropUsersFromDocument(ctx, docId, users);
+      } else {
+        output.error = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
+      }
+      break;
+    }
+    case 'saved': {
+      // Результат от менеджера документов о статусе обработки сохранения файла после сборки
+      if ('1' !== params.status) {
+        //запрос saved выполняется синхронно, поэтому заполняем переменную чтобы проверить ее после sendServerRequest
+        yield editorData.setSaved(ctx, docId, params.status);
+        ctx.logger.warn('saved corrupted id = %s status = %s conv = %s', docId, params.status, params.conv);
+      } else {
+        ctx.logger.info('saved id = %s status = %s conv = %s', docId, params.status, params.conv);
+      }
+      break;
+    }
+    case 'forcesave': {
+      let forceSaveRes = yield startForceSave(ctx, docId, commonDefines.c_oAscForceSaveTypes.Command, params.userdata, undefined, undefined, undefined, undefined, utils.getBaseUrlByRequest(req));
+      output.error = forceSaveRes.code;
+      break;
+    }
+    case 'meta': {
+      if (params.meta) {
+        yield* publish(ctx, {type: commonDefines.c_oPublishType.meta, ctx: ctx, docId: docId, meta: params.meta});
+      } else {
+        output.error = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
+      }
+      break;
+    }
+    case 'getForgotten': {
+      // Checking for files existence.
+      const forgottenFileFullPath = yield* findForgottenFile(ctx, docId);
+      if (!forgottenFileFullPath) {
+        output.error = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+        break;
+      }
+
+      const forgottenFile = pathModule.basename(forgottenFileFullPath);
+
+      // Creating URLs from files.
+      const baseUrl = utils.getBaseUrlByRequest(req);
+      forgottenData.url = yield storage.getSignedUrl(
+        ctx, baseUrl, forgottenFileFullPath, commonDefines.c_oAscUrlTypes.Temporary, forgottenFile, undefined, cfgForgottenFiles
+      );
+      break;
+    }
+    case 'deleteForgotten': {
+      const forgottenFile = yield* findForgottenFile(ctx, docId);
+      if (!forgottenFile) {
+        output.error = commonDefines.c_oAscServerCommandErrors.DocumentIdError;
+        break;
+      }
+
+      yield storage.deleteObject(ctx, forgottenFile, cfgForgottenFiles);
+      break;
+    }
+    case 'getForgottenList': {
+      forgottenData.keys = yield* getFilesKeys(ctx, cfgForgottenFiles);
+      break;
+    }
+    case 'version': {
+      output.version = `${commonDefines.buildVersion}.${commonDefines.buildNumber}`;
+      break;
+    }
+    case 'license': {
+      const outputLicense = yield* commandLicense(ctx);
+      Object.assign(output, outputLicense);
+      break;
+    }
+    default: {
+      output.error = commonDefines.c_oAscServerCommandErrors.UnknownCommand;
+      break;
+    }
+  }
+
+  Object.assign(output, forgottenData);
+}
+
 // Команда с сервера (в частности teamlab)
 exports.commandFromServer = function (req, res) {
   return co(function* () {
