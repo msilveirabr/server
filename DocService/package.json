@@ -50,11 +50,5 @@
       "../Common/sources/storage-fs.js",
       "../Common/sources/storage-s3.js"
     ]
-  },
-  "devDependencies": {
-    "jest": "^29.5.0"
-  },
-  "scripts": {
-    "test": "jest"
   }
 }
