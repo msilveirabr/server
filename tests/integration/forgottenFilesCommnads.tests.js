@@ -1,11 +1,17 @@
 const { describe, test, expect, afterAll, beforeAll } = require('@jest/globals');
 const http = require('http');
+
+const { signToken } = require('../../DocService/sources/DocsCoServer');
 const storage = require('../../Common/sources/storage-base');
+const constants = require('../../Common/sources/commondefines');
 const operationContext = require('../../Common/sources/operationContext');
 const config = require('../../Common/config/default.json').services.CoAuthoring;
 
 const cfgForgottenFiles = config.server.forgottenfiles;
 const cfgForgottenFilesName = config.server.forgottenfilesname;
+const cfgTokenAlgorithm = config.token.session.algorithm;
+const cfgExpiresSeconds = 300;
+const isJWTEnabled = config.token.enable.browser || config.token.enable.request.inbox || config.token.enable.request.outbox;
 const ctx = new operationContext.Context();
 const testFilesNames = {
   get: 'DocService-DocsCoServer-forgottenFilesCommands-getForgotten-integration-test',
@@ -16,8 +22,16 @@ const testFilesNames = {
 };
 
 function makeRequest(requestBody, timeout = 5000) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const timer = setTimeout(() => reject('Request timeout'), timeout);
+
+    let body = '';
+    if (isJWTEnabled) {
+      const token = await signToken(ctx, requestBody, cfgTokenAlgorithm, cfgExpiresSeconds, constants.c_oAscSecretType.Session);
+      body = JSON.stringify({ token });
+    } else {
+      body = JSON.stringify(requestBody);
+    }
 
     const options = {
       port: '8000',
@@ -25,7 +39,7 @@ function makeRequest(requestBody, timeout = 5000) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(requestBody)
+        'Content-Length': Buffer.byteLength(body)
       }
     };
     const request = http.request(options, (response) => {
@@ -46,7 +60,7 @@ function makeRequest(requestBody, timeout = 5000) {
       clearTimeout(timer);
     });
 
-    request.write(requestBody);
+    request.write(body);
     request.end();
   });
 }
@@ -76,15 +90,15 @@ describe('Command service', function () {
     describe('Invalid key format', function () {
       const tests = ['getForgotten', 'deleteForgotten'];
       const addSpecialCases = (invalidRequests, expected, testSubject) => {
-        invalidRequests.push(JSON.stringify({
+        invalidRequests.push({
           c: testSubject
-        }));
+        });
         expected.push({ error: 1});
 
-        invalidRequests.push(JSON.stringify({
+        invalidRequests.push({
           c: testSubject,
           key: null
-        }));
+        });
         expected.push({
           key: null,
           error: 1
@@ -94,10 +108,12 @@ describe('Command service', function () {
       for (const testSubject of tests) {
         test(testSubject, async function () {
           const invalidKeys = [true, [], {}, 1, 1.1];
-          const invalidRequests = invalidKeys.map(key => JSON.stringify({
-            c: testSubject,
-            key
-          }));
+          const invalidRequests = invalidKeys.map(key => {
+            return {
+              c: testSubject,
+              key
+            }
+          });
 
           const expected = invalidKeys.map(key => {
             return {
@@ -141,10 +157,10 @@ describe('Command service', function () {
 
       for (const testCase in testCases) {
         test(testCase, async () => {
-          const requestBody = JSON.stringify({
+          const requestBody = {
             c: 'getForgotten',
             key: testCases[testCase].key
-          })
+          };
 
           const actualResponse = await makeRequest(requestBody);
 
@@ -175,10 +191,10 @@ describe('Command service', function () {
 
       for (const testCase in testCases) {
         test(testCase, async () => {
-          const requestBody = JSON.stringify({
+          const requestBody = {
             c: 'deleteForgotten',
             key: testCases[testCase].key
-          });
+          };
 
           const alreadyExistedDirectories = getKeysDirectories(await storage.listObjects(ctx, '', cfgForgottenFiles));
           const directoryToBeDeleted = testCases[testCase].error !== 0 ? '--not-existed--' : testCases[testCase].key;
@@ -199,9 +215,9 @@ describe('Command service', function () {
     
     describe('getForgottenList', function () {
       test('Main case', async () => {
-        const requestBody = JSON.stringify({
+        const requestBody = {
           c: 'getForgottenList'
-        });
+        };
 
         const stateBeforeChanging = await makeRequest(requestBody);
         const alreadyExistedDirectories = JSON.parse(stateBeforeChanging);

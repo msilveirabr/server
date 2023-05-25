@@ -3822,7 +3822,19 @@ function validateInputParams(ctx, authRes, command) {
 
 function* getFilesKeys(ctx, opt_specialDir) {
   const directoryList = yield storage.listObjects(ctx, '', opt_specialDir);
-  return directoryList.map(directory => directory.split('/')[0]);
+  const keys = directoryList.map(directory => directory.split('/')[0]);
+
+  const filteredKeys = [];
+  let previousKey = null;
+  // Key is a folder name. This folder could consist of several files, which leads to N same strings in "keys" array in a row.
+  for (const key of keys) {
+    if (previousKey !== key) {
+      previousKey = key;
+      filteredKeys.push(key);
+    }
+  }
+
+  return filteredKeys;
 }
 
 function* findForgottenFile(ctx, docId) {
