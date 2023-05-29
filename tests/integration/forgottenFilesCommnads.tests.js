@@ -5,13 +5,15 @@ const { signToken } = require('../../DocService/sources/DocsCoServer');
 const storage = require('../../Common/sources/storage-base');
 const constants = require('../../Common/sources/commondefines');
 const operationContext = require('../../Common/sources/operationContext');
-const config = require('../../Common/config/default.json').services.CoAuthoring;
+const utils = require("../../Common/sources/utils");
+const config = require('../../Common/node_modules/config');
 
-const cfgForgottenFiles = config.server.forgottenfiles;
-const cfgForgottenFilesName = config.server.forgottenfilesname;
-const cfgTokenAlgorithm = config.token.session.algorithm;
-const cfgExpiresSeconds = 300;
-const isJWTEnabled = config.token.enable.browser || config.token.enable.request.inbox || config.token.enable.request.outbox;
+const cfgForgottenFiles = config.get('services.CoAuthoring.server.forgottenfiles');
+const cfgForgottenFilesName = config.get('services.CoAuthoring.server.forgottenfilesname');
+const cfgTokenAlgorithm = config.get('services.CoAuthoring.token.session.algorithm');
+const cfgSecretOutbox = config.get('services.CoAuthoring.secret.outbox');
+const cfgTokenOutboxExpires = config.get('services.CoAuthoring.token.outbox.expires');
+const cfgTokenEnableRequestOutbox = config.get('services.CoAuthoring.token.enable.request.outbox');
 const ctx = new operationContext.Context();
 const testFilesNames = {
   get: 'DocService-DocsCoServer-forgottenFilesCommands-getForgotten-integration-test',
@@ -26,8 +28,9 @@ function makeRequest(requestBody, timeout = 5000) {
     const timer = setTimeout(() => reject('Request timeout'), timeout);
 
     let body = '';
-    if (isJWTEnabled) {
-      const token = await signToken(ctx, requestBody, cfgTokenAlgorithm, cfgExpiresSeconds, constants.c_oAscSecretType.Session);
+    if (cfgTokenEnableRequestOutbox) {
+      const secret = utils.getSecretByElem(cfgSecretOutbox);
+      const token = await signToken(ctx, requestBody, cfgTokenAlgorithm, cfgTokenOutboxExpires, constants.c_oAscSecretType.Inbox, secret);
       body = JSON.stringify({ token });
     } else {
       body = JSON.stringify(requestBody);
